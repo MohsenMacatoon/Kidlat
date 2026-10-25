@@ -1,0 +1,41 @@
+:root {
+  --bg: #ffffff; --fg: #1a202c; --muted: #718096; --line: #e2e8f0;
+  --accent: #2b6cb0; --ok: #2f855a; --bad: #c53030; --hover: #f7fafc;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #1f2329; --fg: #e2e8f0; --muted: #a0aec0; --line: #2d3748;
+          --accent: #63b3ed; --ok: #68d391; --bad: #fc8181; --hover: #2a2f37; }
+}
+* { box-sizing: border-box; }
+body { width: 360px; margin: 0; font: 13px system-ui, "Segoe UI", sans-serif;
+       background: var(--bg); color: var(--fg); }
+header { display: flex; gap: 10px; align-items: center; padding: 12px 14px;
+         border-bottom: 1px solid var(--line); }
+header img { width: 28px; height: 28px; }
+.title { font-weight: 700; font-size: 15px; }
+.status { font-size: 12px; color: var(--muted); }
+.status.ok { color: var(--ok); } .status.bad { color: var(--bad); }
+.row { display: flex; align-items: center; gap: 8px; padding: 10px 14px;
+       border-bottom: 1px solid var(--line); cursor: pointer; }
+section { padding: 10px 14px; border-bottom: 1px solid var(--line); }
+h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .04em;
+     color: var(--muted); margin: 0 0 8px; font-weight: 600; }
+ul { list-style: none; margin: 0; padding: 0; max-height: 220px; overflow: auto; }
+li { display: flex; gap: 8px; align-items: center; padding: 6px 4px; border-radius: 6px; }
+li:hover { background: var(--hover); }
+li .info { flex: 1; min-width: 0; }
+li .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+li .meta { font-size: 11px; color: var(--muted); }
+.muted { color: var(--muted); margin: 0; font-size: 12px; }
+button { font: inherit; border: 1px solid var(--accent); background: var(--accent);
+         color: #fff; border-radius: 6px; padding: 5px 10px; cursor: pointer; }
+button.ghost { background: transparent; color: var(--accent); }
+button:disabled { opacity: .5; cursor: default; }
+.add { display: flex; gap: 6px; }
+.add input { flex: 1; min-width: 0; font: inherit; padding: 5px 8px; border-radius: 6px;
+             border: 1px solid var(--line); background: var(--bg); color: var(--fg); }
+footer { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; }
+a { color: var(--accent); }
+
+button.big { width: 100%; padding: 9px 10px; font-weight: 600; }
+.hint { margin-top: 6px; }

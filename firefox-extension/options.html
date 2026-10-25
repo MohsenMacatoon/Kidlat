@@ -1,0 +1,40 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { font: 13px system-ui, "Segoe UI", sans-serif; padding: 8px 4px; max-width: 560px; }
+  label { display: block; margin: 12px 0 4px; font-weight: 600; }
+  .check { font-weight: normal; display: flex; gap: 8px; align-items: center; }
+  input[type=number], textarea, input[type=text] { width: 100%; box-sizing: border-box;
+    font: inherit; padding: 6px; }
+  textarea { height: 80px; }
+  small { color: #718096; display: block; margin-top: 3px; }
+  button { margin-top: 14px; padding: 6px 16px; font: inherit; }
+  #saved { margin-left: 10px; color: #2f855a; }
+</style>
+</head>
+<body>
+  <label class="check"><input type="checkbox" id="enabled"> Catch Firefox downloads and send them to Kidlat</label>
+  <label class="check"><input type="checkbox" id="captureAll"> Catch every file type (ignore the list below)</label>
+
+  <label for="extensions">File types to catch</label>
+  <textarea id="extensions"></textarea>
+  <small>Separated by spaces. Images are left out on purpose so "Save image" still works normally.</small>
+
+  <label for="skipSites">Never catch downloads from these sites</label>
+  <input type="text" id="skipSites" placeholder="e.g. drive.google.com mail.google.com">
+  <small>Useful for sites whose downloads need the browser itself.</small>
+
+  <label for="minSizeKB">Skip files smaller than (KB)</label>
+  <input type="number" id="minSizeKB" min="0">
+
+  <label for="port">Kidlat app port</label>
+  <input type="number" id="port" min="1024" max="65535">
+  <small>Must match Options → "Browser bridge port" in the Kidlat app (default 9614).</small>
+
+  <button id="save">Save</button><span id="saved"></span>
+  <script src="common.js"></script>
+  <script src="options.js"></script>
+</body>
+</html>

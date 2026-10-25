@@ -1,0 +1,44 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <img src="icons/icon32.png" alt="">
+    <div>
+      <div class="title">Kidlat</div>
+      <div id="status" class="status">Checking app…</div>
+    </div>
+  </header>
+
+  <label class="row toggle">
+    <input type="checkbox" id="enabled">
+    <span>Catch Firefox downloads</span>
+  </label>
+
+  <section>
+    <button id="pagevideo" class="big">⚡ Download video from this page</button>
+    <p class="muted hint">Works on YouTube, Facebook, TikTok, X, Vimeo and most video sites. Or hover over any video for the button on it.</p>
+  </section>
+
+  <section>
+    <h2>Videos &amp; audio found on this page</h2>
+    <ul id="media"></ul>
+    <p id="nomedia" class="muted">Nothing found yet. Press play on a video, then open this again.</p>
+  </section>
+
+  <section class="add">
+    <input id="url" type="url" placeholder="Paste a link to download…">
+    <button id="addbtn">Add</button>
+  </section>
+
+  <footer>
+    <button id="open">Open Kidlat</button>
+    <a href="#" id="opts">Options</a>
+  </footer>
+  <script src="common.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

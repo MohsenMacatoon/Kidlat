@@ -1,0 +1,65 @@
+{
+  "manifest_version": 2,
+  "name": "Kidlat Download Manager Integration",
+  "short_name": "Kidlat",
+  "version": "1.1.0",
+  "description": "Sends Firefox downloads to the Kidlat Download Manager app and adds a Download button on videos (YouTube and other sites).",
+  "icons": {
+    "16": "icons/icon16.png",
+    "32": "icons/icon32.png",
+    "48": "icons/icon48.png",
+    "96": "icons/icon96.png"
+  },
+  "permissions": [
+    "downloads",
+    "cookies",
+    "contextMenus",
+    "storage",
+    "tabs",
+    "webRequest",
+    "<all_urls>",
+    "http://127.0.0.1/*"
+  ],
+  "background": {
+    "scripts": [
+      "common.js",
+      "background.js"
+    ]
+  },
+  "browser_action": {
+    "default_title": "Kidlat",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "32": "icons/icon32.png"
+    }
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": false
+  },
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "kidlat@mohsenmacatoon.github.io",
+      "strict_min_version": "115.0",
+      "data_collection_permissions": {
+        "required": [
+          "none"
+        ]
+      }
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "<all_urls>"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "all_frames": true,
+      "match_about_blank": true,
+      "run_at": "document_idle"
+    }
+  ]
+}

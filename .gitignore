@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+
+# PyInstaller build output (made by "Build Kidlat.exe.bat")
+build/
+dist/
+*.spec
+
+# Downloaded video tools and partial downloads, if ever placed here
+tools/
+*.kidlat
+
+# OS files
+Thumbs.db
+Desktop.ini
+.DS_Store
