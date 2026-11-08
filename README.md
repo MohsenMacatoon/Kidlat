@@ -27,6 +27,7 @@
 - [Installation](#installation)
 - [Using Kidlat](#using-kidlat)
 - [Video downloads (YouTube and other sites)](#video-downloads-youtube-and-other-sites)
+- [Playing videos and music in order](#playing-videos-and-music-in-order)
 - [Options](#options)
 - [Troubleshooting](#troubleshooting)
 - [How it works](#how-it-works)
@@ -42,7 +43,7 @@
 **Downloading**
 - **Multi-connection downloads**: splits each file into up to 32 parts and downloads them at the same time (8 by default).
 - **Dynamic splitting**: when one connection finishes, it takes over half of the biggest remaining part, so no connection sits idle.
-- **Pause and resume anytime**, even after closing the app or restarting the PC.
+- **Pause and resume anytime**, even after closing the app or restarting the PC. Downloads that were running or waiting when Kidlat closed come back **paused**, so nothing uses your data until you press Resume.
 - **Built for unstable internet**: when the connection drops, it waits and retries automatically and keeps everything already downloaded.
 - **Refresh expired links**: continue a stopped download with a new link instead of starting over.
 - **Download queue**: runs a set number of downloads at a time (3 by default); the rest wait their turn.
@@ -53,7 +54,9 @@
 - **Catches downloads** automatically when you click a download link.
 - **⚡ Download this video** button on top of videos, IDM-style.
 - **Right-click menu**: *Download with Kidlat*, and *Download all links with Kidlat* for every file linked on a page.
+- **⏺ Record this video**: records a video while it plays (picture and sound), even streams that can't be downloaded. Keeps recording while you use other windows. Saved as `.webm` in your Video folder.
 - **Toolbar popup**: turn catching on or off, download the video on the current page, or paste a link.
+- **Starts the app for you**: if Kidlat is closed, the extension opens it automatically when you download something. Kidlat runs on its own, so closing Firefox doesn't stop your downloads.
 
 **Video sites**
 - YouTube, Facebook, TikTok, X/Twitter, Instagram, Vimeo, Dailymotion, Reddit and [1,000+ more sites](https://github.com/yt-dlp/yt-dlp/blob/master/supportedsites.md), plus streamed video on ordinary websites.
@@ -62,6 +65,7 @@
 - **Audio only** (M4A or MP3).
 
 **Other**
+- **Play in order**: plays a folder or selected videos/music in name order (Part 1, Part 2 … Part 10), which Windows doesn't do when you select many files and press Enter.
 - Starts with Windows (optional), minimized and ready for Firefox.
 - Normal downloads use only the Python standard library; no `pip install` needed.
 
@@ -153,6 +157,7 @@ If you turned on *Start with Windows*, open **Options → Save** once so it poin
 | Let Firefox handle a download | Lightning icon → untick **Catch Firefox downloads**. |
 | Pause or continue | Select the download → **Pause** / **Resume**, or **Pause All** / **Resume All**. |
 | Link expired mid-download | Copy a fresh link from the site → right-click the download → **Refresh Link**. |
+| Rename a file | Right-click it → **Rename…** (or press **F2**), or click **Rename** in the "Download complete" popup. Videos also have a **Save as** box before downloading. |
 | Open a finished file | Double-click it. Right-click → **Open Folder** shows it in Explorer. |
 | See each connection working | Double-click an unfinished download. |
 
@@ -176,6 +181,46 @@ Kidlat uses free, open-source tools for video sites. Click **Video Tools** in Ki
 
 ---
 
+## Recording a video
+
+When a video can't be downloaded, record it instead. This needs no extra software.
+
+1. Drag the video's tab out into **its own Firefox window** (or open your other tabs in a new window with **Ctrl+N**).
+2. Hover over the video → click **⏺ Record** (records from where the video is now) or **⏮ Record from start** (rewinds to 0:00 first). The video plays and the button turns red: **■ Stop 01:23 (at 12:34)**, showing how long you've recorded and where the video is.
+3. Keep browsing in your other window. Don't minimize the recording window; it can be behind other windows.
+4. When the video ends, the recording is saved as one file automatically.
+
+**Stop and continue later**
+- Click **■ Stop** any time. The bar then shows **⏺ Continue from 12:34** and **✓ Finish**.
+- If the video gets stuck, you can **refresh the page**, or even restart your PC. When you come back to the same page, the bar shows **⏺ Continue from 12:34**. Clicking it jumps the video to 12:34 and records the next part.
+- To continue from a **different point**, move the video there first. The bar then also shows **⏺ Continue from here (15:02)**.
+- Click **✓ Finish** (or right-click it in Kidlat → **Finish recording**) to save all the parts as one video. Joining needs **FFmpeg** (Video Tools); without it, the parts are kept as separate files: `Title (part 1).webm`, `Title (part 2).webm`, ….
+
+Tips:
+- Recording happens in real time: a 30-minute video takes 30 minutes. Files use about 1 GB per hour.
+- If the video lags or buffers, or you pause it, the recording pauses too (**⏸ Waiting**) and continues when the video plays again, so the file has no frozen parts. Kidlat watches the video's own clock, so this works even with players that don't report lag.
+- **Record faster (1.5× or 2×):** click the speed chip on the bar (**1× → ⏩ 1.5× → ⏩ 2×**) before recording. The video plays fast with "chipmunk" sound while recording; when you **Finish**, Kidlat turns it back into a **normal-speed** video. The picture isn't re-encoded and the sound returns to its normal pitch. Needs **FFmpeg** (Video Tools); without it the file stays fast until you right-click → **Convert to normal speed**.
+  - At 2×, the very highest treble (above ~12 kHz) is lost; voices sound the same. If your PC can't keep up with 2× playback, the restored video may be a bit less smooth.
+- **Recording with the screen off or tabs switched**: Firefox stops drawing videos it thinks nobody can see. Open `about:config` and set these to **false**, then restart Firefox:
+  - `media.suspend-background-video.enabled` (switching tabs)
+  - `widget.windows.window_occlusion_tracking.enabled` (screen off, covered windows, locked PC)
+- While recording or downloading, Kidlat keeps the PC from going to **sleep** (the screen can still turn off). Pressing the power button or closing a laptop lid still puts it to sleep; to only turn the screen off, set **Control Panel → Power Options → Choose what the power buttons do → Turn off the display**.
+- If the PC slept anyway, or Kidlat was closed or restarted while recording, the recording carries on by itself in the same file (Kidlat is started again automatically if needed).
+- Finished recordings are fixed automatically so you can **skip around without freezing**. (Firefox saves recordings without an index, so players have to scan the whole file on every jump.) For older recordings: right-click → **Fix freezing when skipping**, or **Video Tools → Fix a recording...**
+- DRM-protected video (Netflix, Disney+, many paid sites) can't be recorded.
+
+## Playing videos and music in order
+
+When you select many files in File Explorer and press Enter, Windows hands them to the player in a mixed-up order (usually starting with the one you clicked, and at most 15 files). Kidlat fixes this by making a playlist sorted the way File Explorer sorts by name, so `Part 2` comes before `Part 10`.
+
+- **A whole folder:** right-click the folder, or empty space inside it → **▶ Play all in order (Kidlat)**.
+- **Only some files:** select them → right-click → **▶ Play selected in order (Kidlat)**.
+- **Inside Kidlat:** select finished downloads → right-click → **▶ Play in order**.
+
+On Windows 11, these items are under **Show more options** (or press Shift + right-click).
+
+Kidlat opens the playlist in your default player, the same one that opens when you double-click a video: a `.wpl` playlist for Windows Media Player (also used when the default is the Windows 11 Media Player or Movies & TV app), or `.m3u8` for other players such as VLC, MPC-HC, PotPlayer or mpv. Kidlat's window doesn't need to be open. To remove the menu items, turn off the option in **Options**.
+
 ## Options
 
 | Option | Default | What it does |
@@ -187,6 +232,8 @@ Kidlat uses free, open-source tools for video sites. Click **Video Tools** in Ki
 | Speed limit | 0 (none) | In KB/s |
 | Ask before downloads caught from Firefox | On | Shows the file info window first |
 | Popup when a download finishes | On | Small window with Open / Open Folder |
+| Save videos as MP4 that plays in every player | On | Video downloads and recordings are saved as MP4 (H.264 + AAC), which every player opens, including Windows Media Player (Legacy). Converts only when needed; needs FFmpeg |
+| Add "Play in order" to the File Explorer right-click menu | On | See [Playing videos and music in order](#playing-videos-and-music-in-order) |
 | Start with Windows | Off | Starts minimized at login |
 | Browser bridge port | 9614 | Must match the extension's Options |
 
@@ -200,14 +247,20 @@ Kidlat uses free, open-source tools for video sites. Click **Video Tools** in Ki
 |---|---|
 | `Start Kidlat.bat` says tkinter is missing | See [step 1](#1-install-python): add **tcl/tk and IDLE** to Python. |
 | IDM still grabs downloads | Turn off **IDM Integration Module** in `about:addons`, then restart Firefox. |
-| Extension says **"App is not running"** | Start Kidlat. Check both use the same port (default 9614). |
+| Extension says Kidlat **couldn't be started** | Open Kidlat once (Start menu or `Start Kidlat.bat`). This sets up auto-start; after that the extension opens Kidlat by itself. If you move the Kidlat folder, open it once again. |
+| Extension says **"App is not running"** | Turn on **Start the Kidlat app automatically** in the extension's Options, or start Kidlat yourself. Check both use the same port (default 9614). |
 | Extension disappeared after restarting Firefox | It was loaded as temporary. Load it again, or [sign it](#6-install-the-firefox-extension) once. |
 | Video button doesn't show | Reload the page (F5). Videos smaller than 200×110 pixels (ads, previews) don't get a button. Use the popup's **Download video from this page**. |
 | YouTube download fails | **Video Tools → Update yt-dlp**. Make sure **Deno** is installed. |
 | Only 360p on YouTube | Install **FFmpeg** in Video Tools. |
+| A video won't play in Windows Media Player | Right-click it in Kidlat → **Convert to MP4 (plays in every player)**. Needs FFmpeg. |
+| Streamed video on a website won't download | **Play the video first** (a few seconds), then click the ⚡ button or the lightning icon → **Download video from this page**. Kidlat needs to see the stream the player loads. |
 | A site's downloads keep failing | Extension **Options → Never catch downloads from these sites**, then let Firefox download them. |
 | "Port is busy" in the status bar | Kidlat is already running (check the taskbar), or change the port in both the app and the extension. |
 | Download stuck on "Retrying" | Your connection dropped. Kidlat keeps retrying; you can also **Pause** and **Resume** later. |
+| "Play in order" isn't in the right-click menu | Open Kidlat once (this adds it), and check the option is on in **Options**. On Windows 11, look under **Show more options**. If you moved the Kidlat folder, open Kidlat again. |
+| A recording says **Couldn't save yet** | A part of it is open in a video player. Close the player, then right-click the recording in Kidlat → **Finish recording**. Nothing is lost. |
+| A video says **kept the original format** | It downloaded fine but the MP4 copy failed; it still plays in VLC. Right-click → **Convert to MP4** to try again (needs FFmpeg). |
 | Server said 403 / link expired | Copy a new link from the website → right-click → **Refresh Link**. |
 
 Your download list and settings are stored in `%APPDATA%\Kidlat`.
@@ -244,6 +297,11 @@ kidlat/
 │   ├── tools.py            # Video Tools: yt-dlp, Deno, FFmpeg
 │   ├── bridge.py           # Local server the Firefox extension talks to
 │   ├── autostart.py        # "Start with Windows" (registry Run key)
+│   ├── recorder.py         # Saves ⏺ Record recordings to disk
+│   ├── compat.py           # Converts videos to MP4 (H.264/AAC) that every player opens
+│   ├── webmfix.py          # Adds the missing index/length to recordings (smooth skipping)
+│   ├── playlist.py         # "Play in order": sorted playlists + File Explorer menu
+│   ├── nativehost.py       # Lets the Firefox extension start Kidlat (native messaging)
 │   └── kidlat.ico          # App icon
 ├── firefox-extension/
 │   ├── manifest.json

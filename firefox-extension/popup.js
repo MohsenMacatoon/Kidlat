@@ -8,15 +8,17 @@
     browser.storage.local.set({ enabled: e.target.checked }));
 
   const alive = await browser.runtime.sendMessage({ type: "alive" });
-  $("status").textContent = alive ? "App is running" : "App is not running - start Kidlat";
-  $("status").className = "status " + (alive ? "ok" : "bad");
+  $("status").textContent = alive ? "App is running"
+    : (s.autoStart ? "App is closed - it starts automatically when needed" : "App is not running - start Kidlat");
+  $("status").className = "status " + (alive ? "ok" : (s.autoStart ? "" : "bad"));
+  const canUse = alive || s.autoStart;
 
   const pv = $("pagevideo");
   const webPage = /^https?:/i.test(tab.url || "");
-  pv.disabled = !alive || !webPage;
+  pv.disabled = !canUse || !webPage;
   pv.addEventListener("click", async () => {
     pv.disabled = true;
-    pv.textContent = "Sending…";
+    pv.textContent = alive ? "Sending…" : "Starting Kidlat…";
     try {
       await browser.runtime.sendMessage({ type: "page-video", tabId: tab.id });
       pv.textContent = "✓ Sent - choose quality in Kidlat";
@@ -41,7 +43,7 @@
     info.append(name, meta);
     const btn = document.createElement("button");
     btn.textContent = "Download";
-    btn.disabled = !alive;
+    btn.disabled = !canUse;
     btn.addEventListener("click", async () => {
       btn.disabled = true;
       try {
@@ -68,11 +70,19 @@
     }
   });
 
+  $("open").textContent = alive ? "Open Kidlat" : "Start Kidlat";
   $("open").addEventListener("click", async () => {
-    await browser.runtime.sendMessage({ type: "show" });
-    window.close();
+    $("open").disabled = true;
+    $("open").textContent = alive ? "Opening…" : "Starting…";
+    const ok = await browser.runtime.sendMessage({ type: "show" });
+    if (ok) window.close();
+    else {
+      $("status").textContent = "Couldn't start - open Kidlat once from the Start menu";
+      $("status").className = "status bad";
+      $("open").disabled = false;
+      $("open").textContent = "Start Kidlat";
+    }
   });
-  $("open").disabled = !alive;
   $("opts").addEventListener("click", e => {
     e.preventDefault();
     browser.runtime.openOptionsPage();

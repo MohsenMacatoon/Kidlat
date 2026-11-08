@@ -2,8 +2,8 @@
   "manifest_version": 2,
   "name": "Kidlat Download Manager Integration",
   "short_name": "Kidlat",
-  "version": "1.1.0",
-  "description": "Sends Firefox downloads to the Kidlat Download Manager app and adds a Download button on videos (YouTube and other sites).",
+  "version": "1.5.2",
+  "description": "Sends Firefox downloads to the Kidlat Download Manager app, and adds Download and Record buttons on videos.",
   "icons": {
     "16": "icons/icon16.png",
     "32": "icons/icon32.png",
@@ -14,6 +14,7 @@
     "downloads",
     "cookies",
     "contextMenus",
+    "nativeMessaging",
     "storage",
     "tabs",
     "webRequest",

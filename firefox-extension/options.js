@@ -3,6 +3,7 @@
   const s = await kidlatSettings();
   $("enabled").checked = s.enabled;
   $("captureAll").checked = s.captureAll;
+  $("autoStart").checked = s.autoStart;
   $("extensions").value = s.extensions;
   $("skipSites").value = s.skipSites;
   $("minSizeKB").value = s.minSizeKB;
@@ -12,6 +13,7 @@
     await browser.storage.local.set({
       enabled: $("enabled").checked,
       captureAll: $("captureAll").checked,
+      autoStart: $("autoStart").checked,
       extensions: $("extensions").value.trim() || KIDLAT_DEFAULTS.extensions,
       skipSites: $("skipSites").value.trim(),
       minSizeKB: Math.max(0, parseInt($("minSizeKB").value, 10) || 0),

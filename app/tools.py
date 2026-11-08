@@ -55,6 +55,7 @@ class Tools:
         self.dl_dir = os.path.join(self.dir, "_downloads")
         os.makedirs(self.dl_dir, exist_ok=True)
         self.listeners = []          # called with (tool_name, ok, message)
+        self.running = set()         # long FFmpeg jobs, stopped when Kidlat closes
 
     # --- finding ---------------------------------------------------------
     def path(self, name):
@@ -126,13 +127,18 @@ class Tools:
         deno = self.path("deno")
         if deno:
             cmd += ["--js-runtimes", f"deno:{deno}"]
-        h = headers or {}
-        if h.get("User-Agent"):
-            cmd += ["--user-agent", h["User-Agent"]]
-        if h.get("Referer"):
-            cmd += ["--referer", h["Referer"]]
-        if h.get("Cookie"):
-            cmd += ["--add-header", f"Cookie:{h['Cookie']}"]
+        for name, value in (headers or {}).items():
+            if not value or any(c in str(value) for c in "\r\n"):
+                continue
+            low = name.lower()
+            if low == "user-agent":
+                cmd += ["--user-agent", value]
+            elif low == "referer":
+                cmd += ["--referer", value]
+            elif low in ("range", "host", "content-length", "accept-encoding"):
+                continue
+            else:                      # Cookie, Origin, Authorization, X-...
+                cmd += ["--add-header", f"{name}:{value}"]
         return cmd + list(args)
 
     def popen(self, cmd):
@@ -230,13 +236,16 @@ def choices(info, has_ffmpeg):
                          reverse=True)
         for h in heights:
             vids = [f for f in fmts if _has_v(f) and f.get("height") == h]
-            best_v = max(vids, key=lambda f: (f.get("ext") == "mp4", f.get("tbr") or 0))
+            best_v = max(vids, key=lambda f: (str(f.get("vcodec", "")).startswith("avc1"),
+                                              f.get("ext") == "mp4", f.get("tbr") or 0))
             size = _size(best_v)
             if not _has_a(best_v) and best_audio:
                 size += _size(best_audio)
             out.append({
                 "label": f"{h}p video",
-                "args": ["-f", f"bv*[height<={h}][ext=mp4]+ba[ext=m4a]/"
+                # H.264 + AAC first: plays in every player without converting
+                "args": ["-f", f"bv*[height<={h}][vcodec^=avc1]+ba[acodec^=mp4a]/"
+                               f"bv*[height<={h}][ext=mp4]+ba[ext=m4a]/"
                                f"bv*[height<={h}]+ba/b[height<={h}]/b",
                          "--merge-output-format", "mp4"],
                 "size": size, "audio": False, "height": h})

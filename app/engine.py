@@ -61,6 +61,8 @@ DEFAULT_SETTINGS = {
     "timeout": 30,
     "port": 9614,
     "ask_on_browser_capture": True,
+    "compat_mp4": True,         # save videos as MP4 (H.264/AAC) that every player opens
+    "explorer_play": True,      # "Play in order" in the File Explorer right-click menu
 }
 
 QUEUED, CONNECTING, DOWNLOADING, PAUSED, COMPLETE, ERROR = (
@@ -242,6 +244,11 @@ class Download:
         # video-site downloads (handled by yt-dlp)
         self.kind = "file"            # "file" or "media"
         self.fallback_url = ""
+        self.url_headers = {}         # headers to use for a specific address
+        self.rec_parts = []           # recordings: part files ("Title (part 1).webm")
+        self.rec_pos = 0.0            # recordings: video time where it stopped
+        self.rec_url = ""             # recordings: page it was recorded from
+        self.rec_speeds = {}          # recordings: file name -> speed it was recorded at
         self.fmt_args = []
         self.fmt_label = ""
         self.title = ""
@@ -253,10 +260,13 @@ class Download:
         self._subs = []               # fast mode: live stream downloads
         self.fast = False             # fast mode running (Kidlat's own engine)
         self.max_range = 0            # cap on bytes per request (0 = none)
+        self.fetched = False          # video: downloaded, only the MP4 step is left
 
     # --- derived ----------------------------------------------------------
     @property
     def downloaded(self):
+        if self.kind == "record":
+            return self.m_done
         if self.kind == "media":
             if not self.subs:
                 return self.m_done
@@ -293,6 +303,12 @@ class Download:
     def part_path(self):
         return self.path + PART_EXT
 
+    def headers_for(self, url):
+        """Headers for this address: the site player's own headers if we have them."""
+        h = dict(self.headers)
+        h.update(self.url_headers.get(url) or {})
+        return h
+
     @property
     def category(self):
         if self.tag.startswith("tool:"):
@@ -311,9 +327,13 @@ class Download:
                 "finished": self.finished,
                 "segments": [s.to_dict() for s in self.segments],
                 "kind": self.kind, "fallback_url": self.fallback_url,
+                "url_headers": self.url_headers,
+                "rec_parts": self.rec_parts, "rec_pos": self.rec_pos,
+                "rec_url": self.rec_url, "rec_speeds": self.rec_speeds,
                 "fmt_args": self.fmt_args, "fmt_label": self.fmt_label,
                 "title": self.title, "m_done": self.m_done,
                 "m_files": self.m_files, "tag": self.tag, "subs": self.subs,
+                "fetched": self.fetched,
             }
 
     @classmethod
@@ -331,6 +351,11 @@ class Download:
         dl.segments = [Segment.from_dict(s) for s in d.get("segments", [])]
         dl.kind = d.get("kind", "file")
         dl.fallback_url = d.get("fallback_url", "")
+        dl.url_headers = d.get("url_headers", {})
+        dl.rec_parts = d.get("rec_parts", [])
+        dl.rec_pos = d.get("rec_pos", 0.0)
+        dl.rec_url = d.get("rec_url", "")
+        dl.rec_speeds = d.get("rec_speeds", {})
         dl.fmt_args = d.get("fmt_args", [])
         dl.fmt_label = d.get("fmt_label", "")
         dl.title = d.get("title", "")
@@ -338,7 +363,10 @@ class Download:
         dl.m_files = d.get("m_files", [])
         dl.tag = d.get("tag", "")
         dl.subs = d.get("subs", [])
-        if dl.status in (DOWNLOADING, CONNECTING):
+        dl.fetched = bool(d.get("fetched", False))
+        # app closed while downloading, recording or waiting in the queue: paused, so
+        # nothing starts using your data by itself when Kidlat opens again
+        if dl.status in (DOWNLOADING, CONNECTING, QUEUED):
             dl.status = PAUSED
         return dl
 
@@ -386,7 +414,12 @@ def open_url(url, headers, timeout, start=None, end=None):
 
 def probe(url, headers=None, timeout=30):
     """Ask the server about a file: name, size, and whether it can resume."""
-    resp = open_url(url, headers, timeout, start=0, end=0)
+    try:
+        resp = open_url(url, headers, timeout, start=0, end=0)
+    except HTTPFatal as e:
+        if "(416)" not in str(e):
+            raise
+        resp = open_url(url, headers, timeout)          # empty file: no byte 0 to ask for
     try:
         hdrs = resp.headers
         info = {"final_url": resp.geturl(), "size": -1, "resumable": False,
@@ -494,6 +527,10 @@ class Job(threading.Thread):
     def _run_segmented(self):
         dl = self.dl
         with dl.lock:
+            if dl.segments and not os.path.exists(dl.part_path):
+                # the unfinished file was deleted/moved: its data is gone, start over
+                for s in dl.segments:
+                    s.pos = s.start
             if not dl.segments or dl.segments[0].end < 0:
                 n = max(1, min(dl.connections, dl.size // MIN_SEGMENT or 1))
                 step = dl.size // n
@@ -673,6 +710,25 @@ def _num(s):
         return 0.0
 
 
+_NET_WORDS = ("unable to download webpage", "getaddrinfo", "name resolution", "timed out",
+              "timeout", "network is unreachable", "no route to host", "connection reset",
+              "connection refused", "connection aborted", "remote end closed",
+              "urlopen error", "temporarily unavailable", "failed to resolve",
+              "no address associated", "nodename nor servname", "errno 11001", "errno 10060",
+              "errno 10054", "errno 10051", "errno 10065", "connection closed early")
+
+
+def is_network_error(e):
+    """True for 'no internet / site not answering' problems (worth a Resume later)."""
+    if isinstance(e, HTTPFatal):
+        return False
+    if isinstance(e, (urllib.error.URLError, ConnectionError, TimeoutError, socket.timeout,
+                      http.client.HTTPException, subprocess.TimeoutExpired)):
+        return True
+    msg = str(e).lower()
+    return any(w in msg for w in _NET_WORDS)
+
+
 class MediaJob(threading.Thread):
     def __init__(self, manager, dl):
         super().__init__(daemon=True, name=f"media-{dl.id}")
@@ -697,7 +753,9 @@ class MediaJob(threading.Thread):
             self.m.changed()
             os.makedirs(dl.folder, exist_ok=True)
             urls = list(dict.fromkeys(u for u in (dl.url, dl.fallback_url) if u))
-            if self._run_fast_any(urls):
+            if dl.fetched and dl.folder and dl.filename and os.path.exists(dl.path):
+                urls = []                       # paused while converting: no new download
+            elif self._run_fast_any(urls):
                 urls = []                       # done with Kidlat's own engine
             last_err = ""
             for i, url in enumerate(urls):
@@ -705,6 +763,9 @@ class MediaJob(threading.Thread):
                 if self.stop.is_set():
                     raise StopRequested
                 if ok:
+                    self._cleanup_fast()        # leftovers of an earlier fast attempt
+                    dl.fetched = True
+                    self.m.save()
                     break
                 last_err = err
                 if i == 0 and len(urls) > 1:
@@ -713,9 +774,14 @@ class MediaJob(threading.Thread):
             else:
                 if urls:
                     raise RuntimeError(last_err or "yt-dlp failed")
+            conv_err = self.m.make_compatible(dl, self.stop.is_set)
+            if self.stop.is_set():
+                raise StopRequested
             dl.status = COMPLETE
             dl.finished = time.time()
             dl.error = dl.substatus = ""
+            if conv_err:                        # the video is fine, just not converted
+                dl.error = "kept the original format (MP4 copy failed: " + conv_err[:80] + ")"
             dl.size = dl.m_done = max(dl.m_done, dl.size)
             self.m.on_complete(dl)
         except StopRequested:
@@ -739,7 +805,8 @@ class MediaJob(threading.Thread):
         return a[a.index("-f") + 1]
 
     def _run_fast_any(self, urls):
-        """Try fast mode; return True if the video was fully downloaded."""
+        """Try fast mode; return True if the video was fully downloaded.
+        What was already downloaded is kept, so a later Resume continues from there."""
         fmt = self._fmt()
         if not fmt:
             return False
@@ -749,14 +816,17 @@ class MediaJob(threading.Thread):
                     return True
             except StopRequested:
                 raise
-            except Exception as e:  # noqa: BLE001  fall back to yt-dlp
+            except Exception as e:  # noqa: BLE001
                 if self.stop.is_set():
-                    raise StopRequested
-                print("Kidlat fast mode skipped:", e, file=sys.stderr)
+                    raise StopRequested from None
+                if is_network_error(e):
+                    # no internet: yt-dlp would fail too (or start over and waste data)
+                    raise RuntimeError("No internet connection (or the site didn't answer). "
+                                       "Press Resume to continue where it stopped.") from e
+                print("Kidlat fast mode skipped:", e, file=sys.stderr)   # use yt-dlp instead
             finally:
                 self.dl.fast = False
                 self.dl._subs = []
-        self._cleanup_fast()
         return False
 
     def _cleanup_fast(self):
@@ -775,15 +845,17 @@ class MediaJob(threading.Thread):
         dl = self.dl
         dl.substatus = "Finding the video files..."
         self.m.changed()
-        info = self.m.tools.info(url, dl.headers, extra=("-f", fmt))
+        page_h = dl.headers_for(url)
+        info = self.m.tools.info(url, page_h, extra=("-f", fmt))
         reqs = info.get("requested_formats") or [info]
         streams = []
         for r in reqs:
             if r.get("protocol") not in ("http", "https") or not r.get("url"):
                 return None, None                 # streamed in pieces -> yt-dlp
             h = dict(r.get("http_headers") or {})
-            if dl.headers.get("Cookie") and "Cookie" not in h:
-                h["Cookie"] = dl.headers["Cookie"]
+            for k in ("Cookie", "Origin", "Authorization"):
+                if page_h.get(k) and k not in h:
+                    h[k] = page_h[k]
             h.pop("Accept-Encoding", None)
             streams.append({"id": str(r.get("format_id")), "url": r["url"],
                             "headers": h, "ext": r.get("ext") or "mp4",
@@ -799,7 +871,7 @@ class MediaJob(threading.Thread):
             raise StopRequested
         if not streams:
             return False
-        title = info.get("title") or dl.title or "video"
+        title = dl.title or info.get("title") or "video"       # the name you chose
         stem = safe_filename(title)
         if len(streams) > 1:
             a = dl.fmt_args
@@ -883,6 +955,8 @@ class MediaJob(threading.Thread):
         dl.subs = []
         dl.filename = os.path.basename(final)
         dl.size = dl.m_done = os.path.getsize(final)
+        dl.fetched = True
+        self.m.save()
         return True
 
     def _save_sub(self, sub, entry, job):
@@ -909,10 +983,32 @@ class MediaJob(threading.Thread):
                                    + r.stderr.decode("utf-8", "replace")[-200:])
         os.replace(tmp_out, final)
 
+    _FINAL_EXTS = ("mp4", "mkv", "webm", "m4a", "mp3", "opus", "ogg", "mov", "flv", "avi", "aac")
+
+    def _free_stem(self, stem):
+        """A file name (without ending) that no finished video in the folder uses yet,
+        so yt-dlp doesn't answer 'already downloaded' with somebody else's file.
+        Unfinished pieces (*.part) of this same download keep the name, so Resume works."""
+        dl = self.dl
+        with self.m.lock:
+            others = {os.path.normcase(os.path.splitext(d.path)[0]) for d in self.m.downloads
+                      if d is not dl and d.kind == "media" and d.status != COMPLETE
+                      and d.filename and d.folder}
+        base, i = stem, 1
+        while True:
+            full = os.path.join(dl.folder, stem)
+            if not any(os.path.exists(f"{full}.{e}") for e in self._FINAL_EXTS) \
+                    and os.path.normcase(full) not in others:
+                return stem
+            stem = f"{base} ({i})"
+            i += 1
+
     def _run_once(self, url):
         dl = self.dl
         limit = int(self.m.settings.get("speed_limit_kbps") or 0)
-        template = os.path.join(dl.folder, "%(title).150B.%(ext)s")
+        name = self._free_stem(safe_filename(dl.title)).replace("%", "%%") \
+            if dl.title else "%(title).150B"
+        template = os.path.join(dl.folder, name + ".%(ext)s")
         args = list(dl.fmt_args or ["-f", "b/bv*+ba"]) + [
             "-o", template, "--newline", "--progress",
             "--progress-template", _PROGRESS, "--progress-delta", "0.5",
@@ -922,7 +1018,7 @@ class MediaJob(threading.Thread):
         ]
         if limit:
             args += ["--limit-rate", f"{limit}K"]
-        cmd = self.m.tools.ytdlp_cmd(*args, url, headers=dl.headers)
+        cmd = self.m.tools.ytdlp_cmd(*args, url, headers=dl.headers_for(url))
         self.proc = self.m.tools.popen(cmd)
         if self.stop.is_set():
             self.m.tools.kill(self.proc)
@@ -1004,6 +1100,7 @@ class Manager:
         self.tools = _tools.Tools(data_dir)
         self.completion_listeners.append(self._tool_finished)
         self._dirty = False
+        self._save_lock = threading.Lock()   # one save at a time (no half-written list)
         self._load()
         self.apply_settings()
         self._ticker = threading.Thread(target=self._tick, daemon=True)
@@ -1013,32 +1110,64 @@ class Manager:
     def _load(self):
         try:
             with open(self.settings_file, encoding="utf-8") as f:
-                self.settings.update(json.load(f))
+                saved = json.load(f)
+            if isinstance(saved, dict):
+                self.settings.update(saved)
         except (OSError, ValueError):
             pass
-        try:
-            with open(self.state_file, encoding="utf-8") as f:
-                self.downloads = [Download.from_dict(d) for d in json.load(f)]
-        except (OSError, ValueError):
-            self.downloads = []
+        self._clean_settings()
+        self.downloads = []
+        for path in (self.state_file, self.state_file + ".bak"):   # .bak if the list is damaged
+            try:
+                with open(path, encoding="utf-8") as f:
+                    items = json.load(f)
+                self.downloads = [Download.from_dict(d) for d in items if isinstance(d, dict)]
+                break
+            except (OSError, ValueError, KeyError, TypeError, AttributeError):
+                continue
         for d in self.downloads:
             d._last_bytes = d.downloaded
+
+    def _clean_settings(self):
+        """Replace missing or broken values (e.g. a hand-edited settings file)."""
+        s, ok = self.settings, DEFAULT_SETTINGS
+        limits = {"connections": (1, 32), "max_active": (1, 10), "speed_limit_kbps": (0, 10**7),
+                  "retries": (0, 1000), "timeout": (5, 600), "port": (1024, 65535)}
+        for key, (lo, hi) in limits.items():
+            try:
+                s[key] = max(lo, min(hi, int(s.get(key))))
+            except (TypeError, ValueError):
+                s[key] = ok[key]
+        for key in ("use_categories", "ask_on_browser_capture", "compat_mp4", "explorer_play"):
+            if not isinstance(s.get(key), bool):
+                s[key] = ok[key]
+        if not isinstance(s.get("download_dir"), str) or not s["download_dir"].strip():
+            s["download_dir"] = ok["download_dir"]
 
     def save(self):
         with self.lock:
             data = [d.to_dict() for d in self.downloads]
-        tmp = self.state_file + ".tmp"
-        try:
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=1)
-            os.replace(tmp, self.state_file)
-        except OSError:
-            pass
-        self._dirty = False
+        with self._save_lock:
+            tmp = self.state_file + ".tmp"
+            try:
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=1)
+                if os.path.exists(self.state_file):      # keep the last good list
+                    try:
+                        os.replace(self.state_file, self.state_file + ".bak")
+                    except OSError:
+                        pass
+                os.replace(tmp, self.state_file)
+            except OSError:
+                pass
+            self._dirty = False
 
     def save_settings(self):
-        with open(self.settings_file, "w", encoding="utf-8") as f:
+        self._clean_settings()
+        tmp = self.settings_file + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(self.settings, f, indent=1)
+        os.replace(tmp, self.settings_file)
         self.apply_settings()
 
     def apply_settings(self):
@@ -1116,7 +1245,7 @@ class Manager:
 
     # --- public API ------------------------------------------------------
     def add(self, url, filename=None, folder=None, headers=None, start=True,
-            info=None, connections=None):
+            info=None, connections=None, save=True):
         dl = Download(url, filename, folder, headers,
                       connections or int(self.settings["connections"]))
         if info:
@@ -1131,7 +1260,10 @@ class Manager:
         dl.status = QUEUED if start else PAUSED
         with self.lock:
             self.downloads.append(dl)
-        self.save()
+        if save:
+            self.save()
+        else:
+            self._dirty = True
         self.changed()
         if start:
             self.schedule()
@@ -1139,7 +1271,7 @@ class Manager:
 
     def add_media(self, url, title, fmt_args, fmt_label, est_size=0,
                   fallback_url="", headers=None, folder=None, audio=False,
-                  start=True):
+                  start=True, url_headers=None):
         """A video-site download, handled by yt-dlp."""
         dl = Download(url, None, None, headers, 1)
         dl.kind = "media"
@@ -1150,6 +1282,7 @@ class Manager:
         dl.filename = safe_filename(dl.title) + ext
         dl.folder = folder or self.folder_for(dl.filename)
         dl.fallback_url = fallback_url or ""
+        dl.url_headers = dict(url_headers or {})
         dl.fmt_args = list(fmt_args)
         dl.fmt_label = fmt_label
         dl.size = int(est_size) if est_size else -1
@@ -1178,6 +1311,74 @@ class Manager:
         if dl.tag.startswith("tool:"):
             self.tools.install(dl.tag[5:], dl.path)
 
+    def make_compatible(self, dl, should_stop=None, force=False):
+        """Convert a finished video to MP4 (H.264/AAC) if old players can't open it.
+        Returns None or an error message. Never loses the original on failure."""
+        import compat
+        if not (force or self.settings.get("compat_mp4", True)):
+            return None
+        if not self.tools.have("ffmpeg") or not dl.folder or not os.path.exists(dl.path):
+            return None if not force else "FFmpeg is needed - get it in Video Tools."
+        try:
+            if not compat.needs_convert(self.tools, dl.path):
+                return None
+            old_sub = dl.substatus
+
+            def prog(f):
+                dl.substatus = f"Making it play in every player… {f * 100:.0f}%"
+                self.changed()
+            prog(0)
+            new = compat.to_mp4(self.tools, dl.path, prog, should_stop)
+            dl.substatus = old_sub
+            dl.filename = os.path.basename(new)
+            try:
+                dl.size = dl.m_done = os.path.getsize(new)
+            except OSError:
+                pass
+            self.save()
+            self.changed()
+            return None
+        except Exception as e:  # noqa: BLE001  keep the original file
+            dl.substatus = ""
+            return str(e)
+
+    def rename(self, did, new_name):
+        """Rename a download or recording. Returns None, or an error message."""
+        d = self.get(did)
+        if not d:
+            return "Download not found."
+        if d._job:
+            return "Pause it first, then rename."
+        if d.kind == "media" and d.status != COMPLETE:
+            return "Video downloads can be renamed when they finish."
+        old_stem, old_ext = os.path.splitext(d.filename or "")
+        stem, ext = os.path.splitext(new_name.strip())
+        # "Part 1.2" or "Vol. 2" are not file endings: keep the old ending (.mp4, ...)
+        if not re.fullmatch(r"\.[A-Za-z0-9]{1,5}", ext or "") or not re.search("[A-Za-z]", ext):
+            stem, ext = new_name.strip(), old_ext
+        name = safe_filename(stem + ext)
+        if not stem.strip() or name == d.filename:
+            return None
+        if d.status == COMPLETE and d.folder and os.path.exists(d.path):
+            target = os.path.join(d.folder, name)
+            if os.path.exists(target) and os.path.normcase(target) != os.path.normcase(d.path):
+                return f'"{name}" already exists in that folder.'
+            try:
+                os.replace(d.path, target)
+            except OSError as e:
+                return f"Windows couldn't rename it: {e.strerror or e}"
+        elif d.kind == "file" and d.folder and os.path.exists(d.part_path):
+            try:                                     # keep the unfinished data
+                os.replace(d.part_path, os.path.join(d.folder, name) + PART_EXT)
+            except OSError as e:
+                return f"Windows couldn't rename it: {e.strerror or e}"
+        d.filename = name
+        if d.kind in ("record", "media"):
+            d.title = os.path.splitext(name)[0]
+        self.save()
+        self.changed()
+        return None
+
     def get(self, did):
         with self.lock:
             for d in self.downloads:
@@ -1187,6 +1388,8 @@ class Manager:
 
     def start(self, did):
         d = self.get(did)
+        if d and d.kind == "record":
+            return
         if d and d.status in (PAUSED, ERROR, QUEUED):
             d.status = QUEUED
             d.error = ""
@@ -1203,7 +1406,7 @@ class Manager:
             d.status = PAUSED
             self.changed()
 
-    def remove(self, did, delete_file=False):
+    def remove(self, did, delete_file=False, save=True):
         d = self.get(did)
         if not d:
             return
@@ -1211,15 +1414,28 @@ class Manager:
         if job:
             job.request_stop()
             job.join(timeout=10)
+        if d.kind == "record" and getattr(self, "recorder", None):
+            self.recorder.close_session(d.id)
+            if delete_file:
+                for p in d.rec_parts:
+                    try:
+                        os.remove(os.path.join(d.folder, p))
+                    except OSError:
+                        pass
         with self.lock:
-            self.downloads.remove(d)
+            if d in self.downloads:
+                self.downloads.remove(d)
         if d.kind == "media":
             leftovers = []
             for f in d.m_files:
                 leftovers += [f + ".part", f + ".ytdl", f + ".part-Frag1"]
                 if delete_file or d.status != COMPLETE:
                     leftovers.append(f)
-            if delete_file and d.status == COMPLETE and d.filename and d.folder:
+            for x in d.subs if d.folder else []:     # fast mode: video/sound pieces
+                p = os.path.join(d.folder, x.get("file", ""))
+                if x.get("file"):
+                    leftovers += [p + PART_EXT, p]
+            if delete_file and (d.status == COMPLETE or d.fetched) and d.filename and d.folder:
                 leftovers.append(d.path)
             for p in leftovers:
                 try:
@@ -1234,6 +1450,17 @@ class Manager:
                         os.remove(p)
                     except OSError:
                         pass
+        if save:
+            self.save()
+        self.changed()
+
+    def remove_many(self, ids, delete_file=False):
+        """Remove several downloads one after another, then save the list once."""
+        for did in ids:
+            try:
+                self.remove(did, delete_file, save=False)
+            except Exception as e:  # noqa: BLE001  keep going with the rest
+                print("Kidlat: couldn't remove", did, e, file=sys.stderr)
         self.save()
         self.changed()
 
@@ -1252,7 +1479,7 @@ class Manager:
 
     def start_all(self):
         for d in list(self.downloads):
-            if d.status in (PAUSED, ERROR):
+            if d.status in (PAUSED, ERROR) and d.kind != "record":   # recordings continue on the page
                 d.status = QUEUED
         self.changed()
         self.schedule()
@@ -1268,7 +1495,7 @@ class Manager:
             for d in self.downloads:
                 if active >= limit:
                     break
-                if d.status == QUEUED and not d._job:
+                if d.status == QUEUED and not d._job and d.kind != "record":
                     d._job = (MediaJob if d.kind == "media" else Job)(self, d)
                     d._job.start()
                     active += 1
@@ -1277,6 +1504,14 @@ class Manager:
         jobs = [d._job for d in self.downloads if d._job]
         for j in jobs:
             j.request_stop()
+        rec = getattr(self, "recorder", None)
+        if rec:
+            try:                          # close recordings cleanly; they can be continued
+                rec.finish_all()
+            except Exception:  # noqa: BLE001
+                pass
+        for proc in list(self.tools.running):   # a conversion in progress: stop it
+            self.tools.kill(proc)
         for j in jobs:
             j.join(timeout=5)
         self.save()

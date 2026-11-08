@@ -11,7 +11,8 @@ const KIDLAT_DEFAULTS = {
     "mp3 m4a aac wav flac ogg opus wma " +
     "pdf doc docx xls xlsx ppt pptx epub mobi " +
     "bin img torrent psd",
-  skipSites: ""           // space separated domains never caught, e.g. "drive.google.com"
+  skipSites: "",          // space separated domains never caught, e.g. "drive.google.com"
+  autoStart: true         // start the Kidlat app automatically when it's needed
 };
 
 async function kidlatSettings() {
@@ -51,6 +52,40 @@ async function kidlatAlive() {
     return false;
   }
 }
+
+// Start the Kidlat app through Firefox native messaging (background script only).
+let kidlatLaunching = null;
+async function kidlatEnsure(timeoutMs = 20000) {
+  if (await kidlatAlive()) return true;
+  const s = await kidlatSettings();
+  if (!s.autoStart || !browser.runtime.connectNative) return false;
+  if (!kidlatLaunching) {
+    kidlatLaunching = (async () => {
+      let missing = false;
+      try {
+        const port = browser.runtime.connectNative("kidlat_launcher");
+        port.onDisconnect.addListener(p => {
+          const err = (p && p.error && p.error.message) || "";
+          if (/no such native application|not found|access/i.test(err)) missing = true;
+        });
+      } catch (e) {
+        return false;
+      }
+      const end = Date.now() + timeoutMs;
+      while (Date.now() < end) {
+        await new Promise(r => setTimeout(r, 600));
+        if (await kidlatAlive()) return true;
+        if (missing) return false;
+      }
+      return false;
+    })().finally(() => { kidlatLaunching = null; });
+  }
+  return kidlatLaunching;
+}
+
+const KIDLAT_NOT_STARTED =
+  "Kidlat couldn't be started automatically.\n" +
+  "Open Kidlat once from the Start menu (this sets up auto-start), then try again.";
 
 function kidlatHumanSize(n) {
   if (!n || n < 0) return "";

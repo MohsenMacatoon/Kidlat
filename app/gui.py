@@ -13,6 +13,8 @@ import urllib.parse
 from tkinter import filedialog, messagebox, ttk
 
 import autostart
+import playlist
+import recorder
 import engine
 import tools
 from engine import (COMPLETE, CONNECTING, DOWNLOADING, ERROR, PAUSED, QUEUED,
@@ -41,7 +43,7 @@ COLUMNS = [
     ("name", "File Name", 300, "w"),
     ("size", "Size", 85, "e"),
     ("progress", "Progress", 75, "e"),
-    ("status", "Status", 120, "w"),
+    ("status", "Status", 160, "w"),
     ("speed", "Speed", 90, "e"),
     ("eta", "Time Left", 80, "e"),
     ("added", "Added", 120, "w"),
@@ -75,15 +77,41 @@ def show_in_folder(path):
         open_path(os.path.dirname(path))
 
 
+MEDIA_ENDINGS = (".mp4", ".mkv", ".webm", ".m4a", ".mp3", ".opus", ".mov", ".avi", ".flv",
+                 ".wav", ".aac", ".ogg")
+
+
+def strip_media_ending(name):
+    """'Mr. Bean Ep. 1.mp4' -> 'Mr. Bean Ep. 1', but 'Mr. Bean Ep. 1' stays whole."""
+    name = name.strip()
+    if name.lower().endswith(MEDIA_ENDINGS):
+        name = os.path.splitext(name)[0].rstrip()
+    return name
+
+
+def where(d):
+    """The file on disk (or the unfinished file); None if it has no place yet."""
+    if not d.folder or not d.filename:
+        return None
+    return d.path if d.status == COMPLETE else d.part_path
+
+
 def status_text(d):
     if d.substatus and d.status in (CONNECTING, DOWNLOADING):
         return d.substatus
+    if d.status == COMPLETE and d.error:
+        return f"Complete - {d.error}"
+    if d.kind == "record":
+        if d.status == PAUSED and d.error:
+            return d.error
+        if d.status == PAUSED:
+            return f"Paused at {recorder.clock(d.rec_pos)} - continue on the page"
     if d.status == DOWNLOADING:
         if d.kind == "media":
             return "Downloading"
         return f"Downloading ({d.active_conns})" if d.active_conns else "Downloading"
     if d.status == ERROR:
-        return "Error"
+        return f"Error: {d.error}" if d.error else "Error"
     if d.error and d.status in (CONNECTING, DOWNLOADING):
         return "Retrying..."
     return d.status
@@ -106,6 +134,7 @@ class AddDialog(tk.Toplevel):
         self.m = app.m
         self.headers = headers or {}
         self.info = None
+        self.info_url = None
         self.title("Download File Info" if from_browser else "Add New Download")
         self.resizable(False, False)
         self.transient(app.root)
@@ -195,13 +224,15 @@ class AddDialog(tk.Toplevel):
                 err = None
             except Exception as e:  # noqa: BLE001
                 info, err = None, str(e)
-            self.app.call(lambda: self._checked(info, err))
+            self.app.call(lambda: self._checked(info, err, url))
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _checked(self, info, err):
+    def _checked(self, info, err, url=None):
         if not self.winfo_exists():
             return
+        if url is not None and url != self.url.get().strip():
+            return                                # the link was changed meanwhile
         if err:
             self.info_lbl.config(text=f"Couldn't check the file: {err[:90]}  "
                                       "(you can still try to download)")
@@ -209,8 +240,10 @@ class AddDialog(tk.Toplevel):
                 self.name.set(engine.guess_filename(self.url.get()))
             return
         self.info = info
-        if not self.name.get():
+        self.info_url = url
+        if not self.name.get() or self.name.get() == getattr(self, "_auto_name", None):
             self.name.set(info["filename"])
+            self._auto_name = info["filename"]
         resume = "Yes" if info["resumable"] else "No (restarts if paused)"
         self.info_lbl.config(text=f"Size: {human_size(info['size'])}     "
                                   f"Resume supported: {resume}     "
@@ -223,7 +256,8 @@ class AddDialog(tk.Toplevel):
             return
         name = engine.safe_filename(self.name.get() or engine.guess_filename(url))
         folder = self.folder.get().strip() or None
-        info = self.info if self.info and self.info.get("final_url") else None
+        info = self.info if self.info and self.info.get("final_url") \
+            and self.info_url == url else None
         dl = self.m.add(url, name, folder, self.headers, start=start, info=info)
         self.destroy()
         if start:
@@ -287,14 +321,15 @@ class ProgressDialog(tk.Toplevel):
 
     def open_file(self):
         d = self.app.m.get(self.did)
-        if d:
+        if d and d.folder and d.filename:
             open_path(d.path)
             self.destroy()
 
     def open_folder(self):
         d = self.app.m.get(self.did)
-        if d:
-            show_in_folder(d.path)
+        p = where(d) if d else None
+        if p:
+            show_in_folder(p)
 
     def refresh(self):
         if not self.winfo_exists():
@@ -318,6 +353,8 @@ class ProgressDialog(tk.Toplevel):
         v["resume"].set("Yes" if d.resumable else ("No" if d.probed else "?"))
         if d.kind == "media":
             v["resume"].set(f"Yes  •  {d.fmt_label}" if d.fmt_label else "Yes")
+        if d.kind == "record" and self.btn_toggle.winfo_ismapped():
+            self.btn_toggle.pack_forget()
         running = bool(d._job) or d.status == QUEUED
         self.btn_toggle.config(text="Pause" if running else "Resume")
         if d.status == COMPLETE and not getattr(self, "_done_shown", False):
@@ -364,7 +401,7 @@ class SettingsDialog(tk.Toplevel):
         self.title("Options")
         self.resizable(False, False)
         self.transient(app.root)
-        center(self, app.root, 560, 360)
+        center(self, app.root, 640, 420)
         f = ttk.Frame(self, padding=14)
         f.pack(fill="both", expand=True)
         f.columnconfigure(1, weight=1)
@@ -376,6 +413,8 @@ class SettingsDialog(tk.Toplevel):
         self.limit = tk.IntVar(value=s["speed_limit_kbps"])
         self.ask = tk.BooleanVar(value=s["ask_on_browser_capture"])
         self.popup = tk.BooleanVar(value=s.get("show_complete_popup", True))
+        self.compat = tk.BooleanVar(value=s.get("compat_mp4", True))
+        self.explorer = tk.BooleanVar(value=s.get("explorer_play", True))
         self.port = tk.IntVar(value=s["port"])
         self.autostart = tk.BooleanVar(value=autostart.is_enabled())
 
@@ -402,6 +441,12 @@ class SettingsDialog(tk.Toplevel):
         r += 1
         ttk.Checkbutton(f, text="Show a popup when a download finishes",
                         variable=self.popup).grid(row=r, column=0, columnspan=3, sticky="w")
+        r += 1
+        ttk.Checkbutton(f, text="Save videos as MP4 that plays in every player, incl. Windows Media Player (needs FFmpeg)",
+                        variable=self.compat).grid(row=r, column=0, columnspan=3, sticky="w", pady=4)
+        r += 1
+        ttk.Checkbutton(f, text='Add "Play in order" to the File Explorer right-click menu',
+                        variable=self.explorer).grid(row=r, column=0, columnspan=3, sticky="w")
         r += 1
         if autostart.supported():
             ttk.Checkbutton(f, text="Start Kidlat when I log in to Windows (opens minimized)",
@@ -431,12 +476,15 @@ class SettingsDialog(tk.Toplevel):
             s["speed_limit_kbps"] = max(0, int(self.limit.get()))
             s["ask_on_browser_capture"] = self.ask.get()
             s["show_complete_popup"] = self.popup.get()
+            s["compat_mp4"] = self.compat.get()
+            s["explorer_play"] = self.explorer.get()
             s["port"] = int(self.port.get())
         except (tk.TclError, ValueError):
             messagebox.showerror(APP_NAME, "Please enter whole numbers.", parent=self)
             return
         self.app.m.save_settings()
         self.app.m.schedule()
+        playlist.set_explorer_menu(self.explorer.get())
         if autostart.supported() and self.autostart.get() != autostart.is_enabled():
             err = autostart.set_enabled(self.autostart.get())
             if err:
@@ -488,6 +536,7 @@ class VideoToolsDialog(tk.Toplevel):
         self.btn_get.pack(side="left", padx=4)
         self.btn_upd = ttk.Button(b, text="Update yt-dlp", command=self.update_ytdlp)
         self.btn_upd.pack(side="left", padx=4)
+        ttk.Button(b, text="Fix a recording...", command=self.pick_repair).pack(side="left", padx=4)
         ttk.Button(b, text="Close", command=self.destroy).pack(side="left", padx=4)
         for v, *_ in self.rows.values():
             v.trace_add("write", lambda *_: self._totals())
@@ -558,6 +607,13 @@ class VideoToolsDialog(tk.Toplevel):
             messagebox.showinfo(APP_NAME, "Nothing to download - tick a tool first.",
                                 parent=self)
 
+    def pick_repair(self):
+        files = filedialog.askopenfilenames(
+            parent=self, title="Recordings that freeze when you skip",
+            initialdir=self.m.folder_for("a.webm"), filetypes=[("WebM video", "*.webm")])
+        if files:
+            self.app.repair_files(list(files))
+
     def update_ytdlp(self):
         self.btn_upd.state(["disabled"])
         self.btn_upd.config(text="Updating...")
@@ -582,20 +638,22 @@ class VideoToolsDialog(tk.Toplevel):
 # Quality picker for video-site downloads
 # --------------------------------------------------------------------------- #
 class MediaDialog(tk.Toplevel):
-    def __init__(self, app, url, fallback="", title="", headers=None):
+    def __init__(self, app, url, fallback="", title="", headers=None, url_headers=None):
         super().__init__(app.root)
         self.app = app
         self.m = app.m
         self.url = url
         self.fallback = fallback if fallback and fallback != url else ""
         self.headers = headers or {}
+        self.url_headers = url_headers or {}
         self.vtitle = title
+        self.first_title = title or ""
         self.choices = []
         self.used_url = url
         self.title("Download Video")
         self.resizable(False, False)
         self.transient(app.root)
-        center(self, app.root, 600, 420)
+        center(self, app.root, 600, 460)
         self.attributes("-topmost", True)
         self.after(1500, lambda: self.attributes("-topmost", False))
 
@@ -613,6 +671,10 @@ class MediaDialog(tk.Toplevel):
         self.qbox = ttk.Labelframe(f, text="Quality", padding=8)
         self.qbox.grid(row=2, column=0, columnspan=3, sticky="ew")
 
+        ttk.Label(f, text="Save as:").grid(row=4, column=0, sticky="w", pady=(10, 0))
+        self.save_as = tk.StringVar(value=engine.safe_filename(title) if title else "")
+        ttk.Entry(f, textvariable=self.save_as).grid(row=4, column=1, columnspan=2,
+                                                     sticky="ew", pady=(10, 0), padx=(6, 0))
         ttk.Label(f, text="Folder:").grid(row=3, column=0, sticky="w", pady=(10, 0))
         self.folder = tk.StringVar(value=self.m.folder_for("video.mp4"))
         self.auto_folder = True
@@ -621,7 +683,7 @@ class MediaDialog(tk.Toplevel):
         ttk.Button(f, text="Browse...", command=self.browse).grid(row=3, column=2,
                                                                   pady=(10, 0))
         b = ttk.Frame(f)
-        b.grid(row=4, column=0, columnspan=3, sticky="e", pady=(14, 0))
+        b.grid(row=5, column=0, columnspan=3, sticky="e", pady=(14, 0))
         self.btn_start = ttk.Button(b, text="Start Download", command=lambda: self.ok(True))
         self.btn_later = ttk.Button(b, text="Download Later", command=lambda: self.ok(False))
         self.btn_start.pack(side="left", padx=4)
@@ -639,7 +701,9 @@ class MediaDialog(tk.Toplevel):
             if not u:
                 continue
             try:
-                info = self.m.tools.info(u, self.headers)
+                h = dict(self.headers)
+                h.update(self.url_headers.get(u) or {})
+                info = self.m.tools.info(u, h)
                 self.used_url = u
                 break
             except Exception as e:  # noqa: BLE001
@@ -660,6 +724,8 @@ class MediaDialog(tk.Toplevel):
             return
         self.vtitle = info.get("title") or self.vtitle or "video"
         self.name_l.config(text=self.vtitle)
+        if not self.save_as.get().strip() or self.save_as.get() == engine.safe_filename(self.first_title):
+            self.save_as.set(engine.safe_filename(self.vtitle))
         dur = info.get("duration")
         has_ff = self.m.tools.have("ffmpeg")
         self.choices = tools.choices(info, has_ff)
@@ -672,7 +738,13 @@ class MediaDialog(tk.Toplevel):
         if not has_ff:
             notes.append("HD needs FFmpeg (Video Tools)")
         self.msg.config(text="   •   ".join(notes), foreground="#555")
-        for i, c in enumerate(self.choices[:12]):
+        vids = [c for c in self.choices if not c["audio"]]
+        auds = [c for c in self.choices if c["audio"]]
+        if len(vids) > 10:                        # too many to list: keep the useful ones
+            keep = vids[:10]
+            self.choices = keep + auds
+        shown = self.choices
+        for i, c in enumerate(shown):
             size = human_size(c["size"]) if c["size"] else "size unknown"
             text = f"{c['label']}   ({size})"
             if c.get("needs_ffmpeg"):
@@ -688,10 +760,20 @@ class MediaDialog(tk.Toplevel):
                 row=0, column=1, rowspan=2, sticky="ne", padx=(20, 0))
         self.q.set(tools.default_choice(self.choices))
         self._quality_changed()
+        self._fit()
         self.btn_start.state(["!disabled"])
         self.btn_later.state(["!disabled"])
         self.btn_start.focus_set()
         self.bind("<Return>", lambda e: self.ok(True))
+
+    def _fit(self):
+        """Grow the window so every quality and the buttons are visible."""
+        self.update_idletasks()
+        need = self.winfo_reqheight() + 10
+        if need > self.winfo_height():
+            x, y = self.winfo_x(), self.winfo_y()
+            top = max(0, min(y, self.winfo_screenheight() - need - 60))
+            self.geometry(f"{self.winfo_width()}x{need}+{x}+{top}")
 
     def _quality_changed(self):
         if self.auto_folder and self.choices:
@@ -709,37 +791,97 @@ class MediaDialog(tk.Toplevel):
             return
         c = self.choices[self.q.get()]
         other = self.fallback if self.used_url == self.url else self.url
-        dl = self.m.add_media(self.used_url, self.vtitle, c["args"], c["label"],
+        name = strip_media_ending(self.save_as.get()) or self.vtitle
+        dl = self.m.add_media(self.used_url, name, c["args"], c["label"],
                               c["size"], fallback_url=other, headers=self.headers,
                               folder=self.folder.get().strip() or None,
-                              audio=c["audio"], start=start)
+                              audio=c["audio"], start=start,
+                              url_headers=self.url_headers)
         self.destroy()
         if start:
             self.app.open_progress(dl.id)
 
 
 # --------------------------------------------------------------------------- #
+# Rename
+# --------------------------------------------------------------------------- #
+def rename_dialog(app, dl, parent=None):
+    parent = parent or app.root
+    win = tk.Toplevel(parent)
+    win.title("Rename")
+    win.resizable(False, False)
+    win.transient(parent)
+    win.attributes("-topmost", True)
+    center(win, app.root, 520, 140)
+    f = ttk.Frame(win, padding=12)
+    f.pack(fill="both", expand=True)
+    stem, ext = os.path.splitext(dl.filename or "")
+    ttk.Label(f, text=f"New name (the {ext or 'file'} ending is kept):").pack(anchor="w")
+    v = tk.StringVar(value=stem)
+    e = ttk.Entry(f, textvariable=v, width=60)
+    e.pack(fill="x", pady=8)
+    e.focus_set()
+    e.select_range(0, "end")
+    msg = ttk.Label(f, text="", foreground="#c53030")
+    msg.pack(anchor="w")
+
+    def ok(_e=None):
+        name = v.get().strip()
+        if ext and name.lower().endswith(ext.lower()):
+            name = name[:-len(ext)].rstrip()
+        if not name:
+            return
+        err = app.m.rename(dl.id, name + ext)
+        if err:
+            msg.config(text=err)
+        else:
+            win.destroy()
+
+    b = ttk.Frame(f)
+    b.pack(anchor="e")
+    ttk.Button(b, text="Rename", command=ok).pack(side="left", padx=4)
+    ttk.Button(b, text="Cancel", command=win.destroy).pack(side="left", padx=4)
+    win.bind("<Return>", ok)
+    win.bind("<Escape>", lambda _e: win.destroy())
+    return win
+
+
+# --------------------------------------------------------------------------- #
 # Completion popup
 # --------------------------------------------------------------------------- #
 class DonePopup(tk.Toplevel):
-    def __init__(self, app, dl):
+    def __init__(self, app, dl, count=1):
         super().__init__(app.root)
         self.title("Download complete")
         self.resizable(False, False)
         self.attributes("-topmost", True)
         sw, sh = self.winfo_screenwidth(), self.winfo_screenheight()
-        self.geometry(f"380x150+{sw - 400}+{sh - 230}")
+        self.geometry(f"440x150+{sw - 460}+{sh - 230}")
         f = ttk.Frame(self, padding=12)
         f.pack(fill="both", expand=True)
-        ttk.Label(f, text="Download complete", font=("Segoe UI", 11, "bold")).pack(anchor="w")
-        ttk.Label(f, text=dl.filename[:55]).pack(anchor="w", pady=(4, 0))
+        head = ("Recording saved" if dl.kind == "record" else
+                "Download complete" if count == 1 else f"{count} downloads complete")
+        ttk.Label(f, text=head, font=("Segoe UI", 11, "bold")).pack(anchor="w")
+        self.dl = dl
+        self.app = app
+        self.name_l = ttk.Label(f, text=dl.filename[:55])
+        self.name_l.pack(anchor="w", pady=(4, 0))
         ttk.Label(f, text=human_size(dl.size), foreground="#555").pack(anchor="w")
         b = ttk.Frame(f)
         b.pack(anchor="e", pady=(10, 0))
         ttk.Button(b, text="Open", command=lambda: (open_path(dl.path), self.destroy())).pack(side="left", padx=3)
         ttk.Button(b, text="Open Folder", command=lambda: (show_in_folder(dl.path), self.destroy())).pack(side="left", padx=3)
+        ttk.Button(b, text="Rename", command=self.rename).pack(side="left", padx=3)
         ttk.Button(b, text="Close", command=self.destroy).pack(side="left", padx=3)
-        self.after(10000, lambda: self.winfo_exists() and self.destroy())
+        self.closer = self.after(10000, lambda: self.winfo_exists() and self.destroy())
+
+    def rename(self):
+        self.after_cancel(self.closer)              # stay open while renaming
+        w = rename_dialog(self.app, self.dl, self)
+        self.wait_window(w)
+        if self.winfo_exists():
+            self.name_l.config(text=self.dl.filename[:55])
+            self.closer = self.after(6000, lambda: self.winfo_exists() and self.destroy())
 
 
 # --------------------------------------------------------------------------- #
@@ -844,6 +986,7 @@ class App:
         self.tree.bind("<Double-1>", self._on_double)
         self.tree.bind("<Button-3>", self._on_right)
         self.tree.bind("<Delete>", lambda e: self.delete_sel())
+        self.tree.bind("<F2>", lambda e: self.rename_sel())
         self.root.bind("<Control-n>", lambda e: self.add_url())
         self.root.bind("<Control-v>", lambda e: self.add_url()
                        if self.root.focus_get() in (self.tree, self.side) else None)
@@ -861,14 +1004,20 @@ class App:
         # context menu
         self.menu = tk.Menu(self.root, tearoff=0)
         self.menu.add_command(label="Open", command=self.open_sel)
+        self.menu.add_command(label="▶ Play in order", command=self.play_sel)
         self.menu.add_command(label="Open Folder", command=self.folder_sel)
         self.menu.add_command(label="Show Progress", command=self.progress_sel)
         self.menu.add_separator()
         self.menu.add_command(label="Resume", command=self.resume_sel)
         self.menu.add_command(label="Pause", command=self.pause_sel)
         self.menu.add_command(label="Redownload", command=self.redownload_sel)
+        self.menu.add_command(label="Finish recording (join parts)", command=self.finish_rec_sel)
+        self.menu.add_command(label="Convert to MP4 (plays in every player)", command=self.compat_sel)
+        self.menu.add_command(label="Fix freezing when skipping (WebM)", command=self.repair_sel)
+        self.menu.add_command(label="Convert to normal speed (fast recording)", command=self.speed_sel)
         self.menu.add_command(label="Refresh Link (expired link)...", command=self.refresh_sel)
         self.menu.add_separator()
+        self.menu.add_command(label="Rename...   (F2)", command=self.rename_sel)
         self.menu.add_command(label="Copy Link", command=self.copy_sel)
         self.menu.add_command(label="Delete", command=self.delete_sel)
         self.menu.add_command(label="Delete With File", command=lambda: self.delete_sel(True))
@@ -931,6 +1080,26 @@ class App:
         for d in self.selected():
             self.m.pause(d.id)
 
+    def play_sel(self):
+        files = []
+        for d in self.selected():
+            if d.status != COMPLETE:
+                continue
+            if not d.folder or not d.filename:
+                continue
+            if d.kind == "record" and d.rec_parts:    # saved as parts: play them all
+                files += [os.path.join(d.folder, n) for n in d.rec_parts]
+            else:
+                files.append(os.path.join(d.folder, d.filename))
+        files = [f for f in files if os.path.splitext(f)[1].lower() in playlist.MEDIA]
+        if not files:
+            messagebox.showinfo(APP_NAME, "Select finished videos or music first "
+                                "(Ctrl+click or Shift+click to pick many).", parent=self.root)
+            return
+        err = playlist.play(playlist.explorer_sorted(files), "Kidlat")
+        if err:
+            messagebox.showerror(APP_NAME, err, parent=self.root)
+
     def open_sel(self):
         for d in self.selected()[:1]:
             if d.status == COMPLETE:
@@ -938,9 +1107,9 @@ class App:
 
     def folder_sel(self):
         sel = self.selected()
-        if sel:
-            d = sel[0]
-            show_in_folder(d.path if d.status == COMPLETE else d.part_path)
+        p = where(sel[0]) if sel else None
+        if p:
+            show_in_folder(p)
         else:
             folder = self.m.settings["download_dir"]
             os.makedirs(folder, exist_ok=True)
@@ -950,6 +1119,79 @@ class App:
         for d in self.selected()[:1]:
             self.open_progress(d.id)
 
+    def finish_rec_sel(self):
+        rec = getattr(self.m, "recorder", None)
+        for d in self.selected():
+            if d.kind == "record" and d.status != COMPLETE and rec:
+                threading.Thread(target=rec.done, args=(d.id,), daemon=True).start()
+
+    def compat_sel(self):
+        todo = [d for d in self.selected() if d.status == COMPLETE and not d.rec_parts]
+        if not todo:
+            messagebox.showinfo(APP_NAME, "Pick a finished video.", parent=self.root)
+            return
+        if not self.m.tools.have("ffmpeg"):
+            messagebox.showinfo(APP_NAME, "This needs FFmpeg. Get it in Video Tools first.",
+                                parent=self.root)
+            return
+
+        def work():
+            done, errs = 0, []
+            for d in todo:
+                before = d.filename
+                err = self.m.make_compatible(d, force=True)
+                if err:
+                    errs.append(f"{before}: {err}")
+                elif d.filename != before:
+                    done += 1
+            msg = (errs[0] if errs else
+                   f"Converted {done} video(s) to MP4." if done else
+                   "Already fine - these play in every player.")
+            self.call(lambda: messagebox.showinfo(APP_NAME, msg, parent=self.root))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def speed_sel(self):
+        rec = getattr(self.m, "recorder", None)
+        todo = [d for d in self.selected() if d.kind == "record" and d.rec_speeds
+                and d.status == COMPLETE]
+        if not todo:
+            messagebox.showinfo(APP_NAME, "Pick a recording that was made at 1.5× or 2× "
+                                "and is still fast.", parent=self.root)
+            return
+
+        def work():
+            errs = [e for e in (rec.convert_pending(d.id) for d in todo) if e]
+            msg = errs[0] if errs else "Done - the recording now plays at normal speed."
+            self.call(lambda: messagebox.showinfo(APP_NAME, msg, parent=self.root))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def repair_sel(self):
+        paths = []
+        for d in self.selected():
+            if d.status == COMPLETE:
+                paths += [os.path.join(d.folder, p) for p in d.rec_parts] if d.rec_parts else [d.path]
+        self.repair_files([p for p in paths if p.lower().endswith(".webm")])
+
+    def repair_files(self, paths):
+        if not paths:
+            messagebox.showinfo(APP_NAME, "Pick a finished .webm video.", parent=self.root)
+            return
+
+        def work():
+            fixed = sum(1 for p in paths if os.path.exists(p) and recorder.repair(p))
+            msg = (f"Fixed {fixed} video(s). Skipping around should be smooth now."
+                   if fixed else "Already fine - nothing needed fixing.")
+            self.call(lambda: messagebox.showinfo(APP_NAME, msg, parent=self.root))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def rename_sel(self):
+        sel = self.selected()
+        if len(sel) == 1:
+            rename_dialog(self, sel[0])
+
     def copy_sel(self):
         sel = self.selected()
         if sel:
@@ -958,10 +1200,13 @@ class App:
 
     def redownload_sel(self):
         for d in self.selected():
+            if d.kind == "record":
+                continue
             if d.kind == "media":
                 self.m.add_media(d.url, d.title, d.fmt_args, d.fmt_label, d.size,
                                  d.fallback_url, d.headers, d.folder,
-                                 audio=d.category == "Music")
+                                 audio=d.category == "Music",
+                                 url_headers=d.url_headers)
             else:
                 self.m.add(d.url, d.filename, d.folder, d.headers)
 
@@ -1014,9 +1259,8 @@ class App:
                "unfinished data is deleted.)")
         if not messagebox.askyesno(APP_NAME, msg, parent=self.root):
             return
-        for d in sel:
-            threading.Thread(target=self.m.remove, args=(d.id, with_file),
-                             daemon=True).start()
+        threading.Thread(target=self.m.remove_many, args=([d.id for d in sel], with_file),
+                         daemon=True).start()
 
     # --- browser bridge --------------------------------------------------
     def handle_browser(self, items):
@@ -1032,8 +1276,9 @@ class App:
             if it.get("userAgent"):
                 headers["User-Agent"] = it["userAgent"]
             self.show()
+            uh = it.get("urlHeaders") if isinstance(it.get("urlHeaders"), dict) else {}
             self.open_media(it["url"], it.get("fallbackUrl", ""), it.get("title", ""),
-                            headers)
+                            headers, uh)
         for it in items:
             headers = {}
             if it.get("referrer"):
@@ -1042,6 +1287,9 @@ class App:
                 headers["Cookie"] = it["cookies"]
             if it.get("userAgent"):
                 headers["User-Agent"] = it["userAgent"]
+            if isinstance(it.get("extraHeaders"), dict):
+                headers.update({k: v for k, v in it["extraHeaders"].items()
+                                if isinstance(v, str)})
             name = it.get("filename") or ""
             if name:
                 name = os.path.basename(name.replace("\\", "/"))
@@ -1049,11 +1297,12 @@ class App:
                 self.show()
                 self.add_url(it["url"], name, headers, from_browser=True)
             else:
-                self.m.add(it["url"], name or None, None, headers)
+                self.m.add(it["url"], name or None, None, headers, save=len(items) == 1)
         if len(items) > 1:
+            self.m.save()
             self.show()
 
-    def open_media(self, url, fallback="", title="", headers=None):
+    def open_media(self, url, fallback="", title="", headers=None, url_headers=None):
         need = []
         if not self.m.tools.have("yt-dlp"):
             need.append("yt-dlp")
@@ -1061,12 +1310,12 @@ class App:
         if ("youtube.com" in host or "youtu.be" in host) and not self.m.tools.have("deno"):
             need.append("Deno")
         if need:
-            self.pending_media = (url, fallback, title, headers)
+            self.pending_media = (url, fallback, title, headers, url_headers)
             VideoToolsDialog(self, "To download this video Kidlat needs: "
                              + " and ".join(need) + ". Download them below - the video "
                              "window opens by itself when they're ready.")
             return
-        MediaDialog(self, url, fallback, title, headers)
+        MediaDialog(self, url, fallback, title, headers, url_headers)
 
     def _tool_done(self, name, ok, msg):
         if not ok:
@@ -1094,7 +1343,16 @@ class App:
             w = self.progress_windows.get(d.id)
             if w is not None and w.winfo_exists():
                 return   # the progress window already shows Open buttons
-            DonePopup(self, d)
+            # one popup at a time: many files finishing together show as one count
+            old = getattr(self, "_popup", None)
+            count = 1
+            if old is not None and old.winfo_exists():
+                count = getattr(old, "count", 1) + 1 \
+                    if time.time() - getattr(old, "born", 0) < 10 else 1
+                old.destroy()
+            self._popup = DonePopup(self, d, count)
+            self._popup.count = count
+            self._popup.born = time.time()
 
     # --- refresh loop ----------------------------------------------------
     def _poll(self):
@@ -1164,7 +1422,8 @@ class App:
                     if self.m.settings.get("speed_limit_kbps") else ""))
 
     def quit(self):
-        running = [d for d in self.m.downloads if d._job]
+        running = [d for d in self.m.downloads
+                   if d._job or (d.kind == "record" and d.status == DOWNLOADING)]
         if running and not messagebox.askyesno(
                 APP_NAME, f"{len(running)} download(s) are running.\n"
                 "Quit anyway? (They will be paused and can be resumed later.)",
